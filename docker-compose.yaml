@@ -3,7 +3,7 @@ version: '3.8'
 services:
   bot:
     build:
-      context: ./app
+      context: app
     container_name: telegram_bot
     environment:
       TOKEN: ${TOKEN}
@@ -25,7 +25,7 @@ services:
 
   postgres_primary:
     build:
-      context: ./db/primary
+      context: db
     container_name: postgres_primary
     user: postgres
     ports:
@@ -38,13 +38,13 @@ services:
     command: |
       postgres
     volumes:
-      - ./db/primary/init.sql:/docker-entrypoint-initdb.d/init.sql
-      - ./db/primary/add_host.sh:/docker-entrypoint-initdb.d/add_host.sh
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./db/add_host.sh:/docker-entrypoint-initdb.d/add_host.sh
 
 
   postgres_replica:
     build:
-      context: ./db/replica
+      context: db_repl
     container_name: postgres_replica
     user: postgres
     ports:
@@ -65,7 +65,7 @@ services:
       postgres
       "
     volumes:
-      - ./db/replica/add_host.sh:/docker-entrypoint-initdb.d/add_host.sh
+      - ./db_repl/add_host.sh:/docker-entrypoint-initdb.d/add_host.sh
     depends_on:
       - postgres_primary
 
