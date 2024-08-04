@@ -1,9 +1,10 @@
 import logging
 import os
+import time
 
 import psycopg2
 from dotenv import load_dotenv
-from psycopg2 import Error
+from psycopg2 import Error, OperationalError
 
 formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -22,26 +23,34 @@ class PsqlHelper():
 
         load_dotenv()
         try:
-            logging.info("Подключаемся к базе")
-            self.connection = psycopg2.connect(
-                user=os.getenv("DB_USER"),
-                password=os.getenv("DB_PASSWORD"),
-                host=os.getenv("DB_HOST"),
-                port=os.getenv("DB_PORT"),
-                database=os.getenv("DB_DATABASE")
-            )
-            self.connection.autocommit = True
-            self.cursor = self.connection.cursor()
+            max_retries = 30
+            delay = 1
+            retries = 0
 
-            self.connection = psycopg2.connect(user=os.getenv("DB_USER"),
-                                               password=os.getenv("DB_PASSWORD"),
-                                               host=os.getenv("DB_HOST"),
-                                               port=os.getenv("DB_PORT"),
-                                               database=os.getenv("DB_DATABASE"))
-            self.connection.autocommit = True
-            self.cursor = self.connection.cursor()
+            while retries < max_retries:
+                try:
+                    logging.info("Подключаемся к базе данных...")
+                    self.connection = psycopg2.connect(
+                        user=os.getenv("DB_USER"),
+                        password=os.getenv("DB_PASSWORD"),
+                        host=os.getenv("DB_HOST"),
+                        port=os.getenv("DB_PORT"),
+                        database=os.getenv("DB_DATABASE")
+                    )
+                    logging.info("Подключение успешно!")
+                    self.connection.autocommit = True
+                    self.cursor = self.connection.cursor()
+                    return
+                except OperationalError as e:
+                    retries += 1
+                    logging.warning(f"Ошибка подключения: {e}. Повторная попытка через {delay} секунд...")
+                    time.sleep(delay)
+
+            logging.error("Не удалось подключиться к базе данных за 30 секунд.")
+            raise Exception("Не удалось подключиться к базе данных.")
+
         except (Exception, Error) as error:
-            logging.info("Ошибка при соединении с PostgreSQL", error)
+            logging.error("Ошибка при соединении с PostgreSQL: %s", error)
 
 
     def select(self, table, query, condition=None):
