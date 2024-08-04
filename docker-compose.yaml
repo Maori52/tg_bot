@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  bot:
+    image: 192.168.211.180:5000/telegram_bot
+    container_name: telegram_bot
+    environment:
+      TOKEN: ${TOKEN}
+      RM_HOST: ${RM_HOST}
+      RM_USER: ${RM_USER}
+      RM_PASSWORD: ${RM_PASSWORD}
+      RM_PORT: ${RM_PORT}
+      MESSAGE_SYMBOL_LIMIT: ${MESSAGE_SYMBOL_LIMIT}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_USER: ${DB_USER}
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_DATABASE: ${DB_DATABASE}
+      POSTGRES_HOST_AUTH_METHOD: "scram-sha-256\nhost replication all 0.0.0.0/0 md5"
+    depends_on:
+      - postgres_primary
+    restart: always
+    shm_size: 1g
+
+  postgres_primary:
+    build:
+      context: ./db/primary
+    container_name: postgres_primary
+    user: postgres
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_DB: ${DB_DATABASE}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_HOST_AUTH_METHOD: "scram-sha-256\nhost replication all 0.0.0.0/0 md5"
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    command: |
+      postgres 
+      -c wal_level=replica 
+      -c hot_standby=on 
+      -c max_wal_senders=10 
+      -c max_replication_slots=10 
+      -c hot_standby_feedback=on
+      -c config_file=/usr/share/postgresql/postgresql.conf
+    volumes:
+      - ./db/primary/postgresql.conf:/usr/share/postgresql/postgresql.conf
+      - ./db/primary/pg_hba.conf:/usr/share/postgresql/pg_hba.conf
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  postgres_replica:
+    build:
+      context: ./db/replica
+    container_name: postgres_replica
+    user: postgres
+    ports:
+      - 5433:5432
+    environment:
+      PGUSER: ${DB_REPL_USER}
+      PGPASSWORD: ${DB_REPL_PASSWORD}
+    command: |
+      bash -c "
+      until pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot --host=postgres_primary --port=5432
+      do
+      echo 'Waiting for primary to connect...'
+      sleep 1s
+      done
+      echo 'Backup done, starting replica...'
+      chmod 0700 /var/lib/postgresql/data
+      postgres -c config_file=/usr/share/postgresql/postgresql.conf
+      "
+    depends_on:
+      - postgres_primary
+    volumes:
+      - ./db/replica/postgresql.conf:/usr/share/postgresql/postgresql.conf
+      - ./db/replica/pg_hba.conf:/usr/share/postgresql/pg_hba.conf
+
+volumes:
+  db_data:
+  db_repl_data:
+
+networks:
+  default:
+    name: my_network
