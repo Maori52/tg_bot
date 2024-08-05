@@ -1,0 +1,166 @@
+---
+- name: Install Postgres to servers
+  vars_files:
+    - vars.yml
+  hosts: db, db_repl
+  become: yes
+
+  tasks:
+    - name: Update package cache
+      apt:
+        update_cache: yes
+
+    - name: Update packages and install dependencies
+      apt:
+        update_cache: yes
+        name:
+          - python3
+          - python3-pip
+          - libpq-dev
+          - python3-dev
+        state: present
+
+    - name: Install psycopg2
+      pip:
+        name: psycopg2
+        state: present
+
+    - name: Install PostgreSQL and contrib packages
+      apt:
+        name:
+          - postgresql
+          - postgresql-contrib
+        state: present
+
+    - name: restart postgres
+      command: systemctl reload postgresql
+
+- name: Configure primary db
+  vars_files:
+    - vars.yml
+  hosts: db
+  become: yes
+  tasks:
+  - name: Add sql file
+    copy:
+      src: ../db/init.sql
+      dest: init.sql
+
+  - name: Add sh file
+    copy:
+      src: ../db/add_host.sh
+      dest: add_host.sh
+
+  - name: Override config
+    copy:
+      src: ../db/postgresql.conf
+      dest: /etc/postgresql/13/main/postgresql.conf
+
+  - name: run sql script
+    command: sudo -u postgres psql -f init.sql
+    register: sql_result
+
+  - name: Restart PostgreSQL
+    become: true
+    service:
+      name: postgresql
+      state: restarted
+
+  - debug:
+      var: sql_result
+
+  - name: Run sh script with environment variable
+    command: "sudo env PGDATA=/etc/postgresql/13/main bash add_host.sh"
+
+  - name: restart postgres
+    command: systemctl reload postgresql
+
+
+- name: Configure replica db
+  vars_files:
+    - vars.yml
+  hosts: db_repl
+  become: yes
+  tasks:
+  - name: Add sh file to initdb
+    copy:
+      src: ../db_repl/add_host.sh
+      dest: add_host.sh
+
+  - name: Update listen address
+    command: sudo -u postgres psql -c "ALTER SYSTEM SET listen_addresses = '*';"
+
+  - name: Run sh script with environment variable
+    command: "sudo env PGDATA=/etc/postgresql/13/main bash add_host.sh"
+
+  - name: restart postgres
+    command: systemctl reload postgresql
+
+  - name: Test replica
+    command: "pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot -U {{ DB_REPL_USER }} --host={{ DB_HOST }} --port={{ DB_PORT }}"
+    ignore_errors: true
+    async: 30
+    poll: 0
+    register: result
+
+  - name: Print result of test
+    debug:
+      msg: "{{ result }}"
+
+- name: Deploy telegram bot
+  vars_files:
+    - vars.yml
+  hosts: tg_bot
+  become: yes
+  tasks:
+    - name: Install git and python3-venv
+      apt:
+        update_cache: yes
+        name:
+          - git
+          - python3-virtualenv
+          - libpq-dev
+          - python3-dev
+        state: present
+
+    - name: Pull repo from GitHub
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ app_directory }}"
+        version: "first_branch"
+        update: yes
+
+    - name: Copy env file
+      copy:
+        src: ../.env
+        dest: "{{ app_directory }}"
+
+    - name: Debug app_directory variable
+      debug:
+        msg: "App directory is: {{ app_directory }}"
+
+    - name: List contents of app_directory
+      command: "ls -la {{ app_directory }}"
+      register: repo_contents
+
+    - name: Debug repo contents
+      debug:
+        msg: "{{ repo_contents.stdout_lines }}"
+
+    - name: Create a virtual environment
+      command: python3 -m venv {{ app_directory }}/venv
+      args:
+        creates: "{{ app_directory }}/venv"
+
+    - name: Install dependencies
+      pip:
+        requirements: "{{ app_directory }}/app/requirements.txt"
+        virtualenv: "{{ app_directory }}/venv"
+        state: present
+
+    - name: Run the Telegram bot
+      command: "{{ app_directory }}/venv/bin/python {{ app_directory }}/app/bot.py"
+      args:
+        chdir: "{{ app_directory }}/app"
+      async: 5
+      poll: 0
