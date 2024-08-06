@@ -35,30 +35,25 @@
     - name: restart postgres
       command: systemctl reload postgresql
 
+
 - name: Configure primary db
   vars_files:
     - vars.yml
   hosts: db
   become: yes
   tasks:
-  - name: Add sql file
-    copy:
-      src: ../db/init.sql
-      dest: init.sql
-
-  - name: Add sh file
-    copy:
-      src: ../db/add_host.sh
-      dest: add_host.sh
-
   - name: Override config
     copy:
       src: ../db/postgresql.conf
       dest: /etc/postgresql/13/main/postgresql.conf
 
-  - name: run sql script
-    command: sudo -u postgres psql -f init.sql
-    register: sql_result
+  - name: Ensure PostgreSQL archive directory exists
+    file:
+      path: /var/lib/postgresql/data/archive
+      state: directory
+      owner: postgres
+      group: postgres
+      mode: '0700'
 
   - name: Restart PostgreSQL
     become: true
@@ -66,14 +61,83 @@
       name: postgresql
       state: restarted
 
-  - debug:
-      var: sql_result
+  - name: Create db user
+    postgresql_user:
+      name: "{{ DB_USER }}"
+      password: "{{ DB_PASSWORD }}"
+    become_user: postgres
 
-  - name: Run sh script with environment variable
-    command: "sudo env PGDATA=/etc/postgresql/13/main bash add_host.sh"
+  - name: Create replica user
+    postgresql_user:
+      name: "{{ DB_REPL_USER }}"
+      password: "{{ DB_REPL_PASSWORD }}"
+      role_attr_flags: "REPLICATION"
+    become_user: postgres
 
-  - name: restart postgres
-    command: systemctl reload postgresql
+  - name: Add sql file
+    copy:
+      src: ../db/init.sql
+      dest: init.sql
+
+  - name: Create db
+    community.postgresql.postgresql_db:
+      name: "{{ DB_DATABASE }}"
+    become_user: postgres
+
+  - name: Run query from SQL script
+    community.postgresql.postgresql_script:
+      db: "{{ DB_DATABASE }}"
+      path: init.sql
+    become_user: postgres
+
+  - name: Fetch list of tables in schema public
+    community.postgresql.postgresql_query:
+      db: "{{ DB_DATABASE }}"
+      query: "SELECT tablename FROM pg_tables WHERE schemaname = 'public';"
+    register: table_list
+    become_user: postgres
+
+  - name: Grant SELECT, INSERT, UPDATE, DELETE on all tables in schema public to the specified role
+    community.postgresql.postgresql_privs:
+      db: "{{ DB_DATABASE }}"
+      privs: "SELECT,INSERT,UPDATE,DELETE"
+      type: table
+      objs: "{{ item.tablename }}"
+      roles: "{{ DB_USER }}"
+      state: present
+    loop: "{{ table_list.query_result }}"
+    become_user: postgres
+
+  - name: add host to pg_hba
+    community.postgresql.postgresql_pg_hba:
+      dest: /etc/postgresql/13/main/pg_hba.conf
+      contype: host
+      users: "{{ DB_REPL_USER }}"
+      source: 0.0.0.0/0
+      databases: replication
+      method: scram-sha-256
+      create: true
+
+  - name: add host to pg_hba
+    community.postgresql.postgresql_pg_hba:
+      dest: /etc/postgresql/13/main/pg_hba.conf
+      contype: host
+      users: "{{ DB_USER }}"
+      source: 0.0.0.0/0
+      databases: "{{ DB_DATABASE }}"
+      method: scram-sha-256
+      create: true
+
+
+  - name: add local
+    community.postgresql.postgresql_pg_hba:
+      dest: /etc/postgresql/13/main/pg_hba.conf
+      contype: local
+      users: all
+      source: 0.0.0.0/0
+      databases: all
+      method: trust
+      create: true
 
 
 - name: Configure replica db
@@ -82,30 +146,29 @@
   hosts: db_repl
   become: yes
   tasks:
-  - name: Add sh file to initdb
-    copy:
-      src: ../db_repl/add_host.sh
-      dest: add_host.sh
+  - name: Set listen_addresses.
+    lineinfile: dest=/etc/postgresql/13/main/postgresql.conf
+      regexp="listen_addresses =" line="listen_addresses = '*'" state=present
 
-  - name: Update listen address
-    command: sudo -u postgres psql -c "ALTER SYSTEM SET listen_addresses = '*';"
+  - name: Restart PostgreSQL
+    become: true
+    service:
+      name: postgresql
+      state: restarted
 
-  - name: Run sh script with environment variable
-    command: "sudo env PGDATA=/etc/postgresql/13/main bash add_host.sh"
+  - name: Delete dir
+    command: rm -rf /var/lib/postgresql/data
 
-  - name: restart postgres
-    command: systemctl reload postgresql
+  - name: Check replica
+    community.postgresql.postgresql_query:
+      db: "{{ DB_DATABASE }}"
+      query: "\\l"
+    register: psql_result
+    become_user: postgres
 
-  - name: Test replica
-    command: "pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot -U {{ DB_REPL_USER }} --host={{ DB_HOST }} --port={{ DB_PORT }}"
-    ignore_errors: true
-    async: 30
-    poll: 0
-    register: result
-
-  - name: Print result of test
+  - name: debug
     debug:
-      msg: "{{ result }}"
+      msg: "{{ psql_result }}"
 
 - name: Deploy telegram bot
   vars_files:

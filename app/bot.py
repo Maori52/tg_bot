@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 import re
+import time
 
 import paramiko
 import psycopg2
@@ -9,6 +10,7 @@ from dotenv import load_dotenv
 from telegram import Update
 from telegram.error import Unauthorized
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler, CallbackContext
+from urllib3.exceptions import ReadTimeoutError
 
 from psql import PsqlHelper
 
@@ -311,14 +313,24 @@ def main():
 
     # Запускаем бота
     logger.info("Start polling...")
-    try:
-        updater.start_polling()
-    except Unauthorized:
-        logger.error("Wrong token")
-        exit(1)
+    retry_attempts = 50  # Number of retry attempts
+    for attempt in range(retry_attempts):
+        try:
+            logger.info("try polling...")
+            updater.start_polling()
+            break  # Break if polling starts successfully
+        except Unauthorized:
+            logger.error("Wrong token")
+            exit(1)
+        except ReadTimeoutError:
+            logger.warning(f"ReadTimeoutError on attempt {attempt + 1}. Retrying...")
+            time.sleep(2)  # Wait before retrying
+        except Exception as e:
+            logger.error(f"An error occurred: {e}. Exiting...")
+            exit(1)
 
     logger.info("OK")
-    # Останавливаем бота при нажатии Ctrl+C
+    # Stop the bot on Ctrl+C
     updater.idle()
 
 
