@@ -188,13 +188,6 @@
     debug:
       msg: "{{ res }}"
 
-#
-#
-#  - name: Test replica
-#    command: "pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot -U {{ DB_REPL_USER }} --host={{ DB_HOST }} --port={{ DB_PORT }}"
-#    async: 30
-#    poll: 0
-#    register: result
 
   - name: Start PostgreSQL
     become: true
