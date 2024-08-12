@@ -146,18 +146,61 @@
   hosts: db_repl
   become: yes
   tasks:
+  - name: Ensure .pgpass file exists with correct permissions
+    ansible.builtin.file:
+      path: /var/lib/postgresql/.pgpass
+      owner: postgres
+      group: postgres
+      mode: '0600'
+      state: touch
+
+  - name: Add credentials to .pgpass
+    ansible.builtin.lineinfile:
+      path: /var/lib/postgresql/.pgpass
+      owner: postgres
+      group: postgres
+      mode: '0600'
+      line: "{{ DB_HOST }}:5432:*:{{ DB_REPL_USER }}:{{ DB_REPL_PASSWORD }}"
+
   - name: Set listen_addresses.
     lineinfile: dest=/etc/postgresql/13/main/postgresql.conf
       regexp="listen_addresses =" line="listen_addresses = '*'" state=present
 
-  - name: Restart PostgreSQL
+  - name: Stop PostgreSQL
     become: true
     service:
       name: postgresql
-      state: restarted
+      state: stopped
 
   - name: Delete dir
-    command: rm -rf /var/lib/postgresql/data
+    command: rm -rf /var/lib/postgresql/13/main/*
+
+
+  - name: Run pg_basebackup
+    command: "pg_basebackup -R -h {{ DB_HOST }} -U {{ DB_REPL_USER }} -D /var/lib/postgresql/13/main -P --progress"
+    become: true
+    become_user: postgres
+    environment:
+      PGPASSFILE: /var/lib/postgresql/.pgpass
+    register: res
+
+  - name: debug
+    debug:
+      msg: "{{ res }}"
+
+#
+#
+#  - name: Test replica
+#    command: "pg_basebackup --pgdata=/var/lib/postgresql/data -R --slot=replication_slot -U {{ DB_REPL_USER }} --host={{ DB_HOST }} --port={{ DB_PORT }}"
+#    async: 30
+#    poll: 0
+#    register: result
+
+  - name: Start PostgreSQL
+    become: true
+    service:
+      name: postgresql
+      state: started
 
   - name: Check replica
     community.postgresql.postgresql_query:
@@ -192,6 +235,7 @@
         dest: "{{ app_directory }}"
         version: "first_branch"
         update: yes
+        force: yes
 
     - name: Copy env file
       copy:
@@ -227,3 +271,8 @@
         chdir: "{{ app_directory }}/app"
       async: 5
       poll: 0
+      register: res
+
+    - name: Show result
+      debug:
+        msg: "{{ res }}"
