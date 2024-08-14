@@ -32,8 +32,11 @@
           - postgresql-contrib
         state: present
 
-    - name: restart postgres
-      command: systemctl reload postgresql
+    - name: Restart PostgreSQL
+      become: true
+      service:
+        name: postgresql
+        state: restarted
 
 
 - name: Configure primary db
@@ -108,6 +111,24 @@
     loop: "{{ table_list.query_result }}"
     become_user: postgres
 
+  - name: Get list of sequences in schema public
+    community.postgresql.postgresql_query:
+      db: "{{ DB_DATABASE }}"
+      query: "SELECT sequence_name FROM information_schema.sequences WHERE sequence_schema='public';"
+    register: sequence_list
+    become_user: postgres
+
+  - name: Grant USAGE, SELECT on all sequences in schema public to the specified role
+    community.postgresql.postgresql_privs:
+      db: "{{ DB_DATABASE }}"
+      privs: "USAGE,SELECT"
+      type: sequence
+      objs: "{{ item.sequence_name }}"
+      roles: "{{ DB_USER }}"
+      state: present
+    loop: "{{ sequence_list.query_result }}"
+    become_user: postgres
+
   - name: add host to pg_hba
     community.postgresql.postgresql_pg_hba:
       dest: /etc/postgresql/13/main/pg_hba.conf
@@ -139,6 +160,11 @@
       method: trust
       create: true
 
+  - name: Restart PostgreSQL
+    become: true
+    service:
+      name: postgresql
+      state: restarted
 
 - name: Configure replica db
   vars_files:
@@ -172,12 +198,21 @@
       name: postgresql
       state: stopped
 
-  - name: Delete dir
-    command: rm -rf /var/lib/postgresql/13/main/*
+  - name: Delete the main directory
+    command: rm -rf /var/lib/postgresql/13/main
+    become: true
 
+  - name: Recreate the main directory
+    file:
+      path: /var/lib/postgresql/13/main
+      state: directory
+      owner: postgres
+      group: postgres
+      mode: '0750'
+    become: true
 
   - name: Run pg_basebackup
-    command: "pg_basebackup -R -h {{ DB_HOST }} -U {{ DB_REPL_USER }} -D /var/lib/postgresql/13/main -P --progress"
+    command: "pg_basebackup -R -h {{ DB_HOST }} -U {{ DB_REPL_USER }} -D /var/lib/postgresql/13/main -P"
     become: true
     become_user: postgres
     environment:
@@ -198,7 +233,7 @@
   - name: Check replica
     community.postgresql.postgresql_query:
       db: "{{ DB_DATABASE }}"
-      query: "\\l"
+      query: "SELECT tablename FROM pg_tables WHERE schemaname = 'public';"
     register: psql_result
     become_user: postgres
 
@@ -226,7 +261,7 @@
       git:
         repo: "{{ repo_url }}"
         dest: "{{ app_directory }}"
-        version: "first_branch"
+        version: "ansible"
         update: yes
         force: yes
 
@@ -259,11 +294,9 @@
         state: present
 
     - name: Run the Telegram bot
-      command: "{{ app_directory }}/venv/bin/python {{ app_directory }}/app/bot.py"
+      shell: "{{ app_directory }}/venv/bin/python {{ app_directory }}/app/bot.py &"
       args:
         chdir: "{{ app_directory }}/app"
-      async: 5
-      poll: 0
       register: res
 
     - name: Show result
